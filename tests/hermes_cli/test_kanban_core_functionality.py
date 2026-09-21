@@ -4046,6 +4046,56 @@ def test_complete_prose_scan_ignores_existing_ids(kanban_home):
         conn.close()
 
 
+def test_complete_prose_scan_ignores_done_task_ids_on_other_boards(kanban_home):
+    """A task id on another configured board is a real reference, not prose noise."""
+    kb.create_board("chief-of-staff-strategic")
+    other_conn = kb.connect(board="chief-of-staff-strategic")
+    try:
+        other = kb.create_task(other_conn, title="other", assignee="x")
+        assert kb.complete_task(other_conn, other, summary="done") is True
+    finally:
+        other_conn.close()
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        assert kb.complete_task(conn, parent, summary=f"depended on {other}") is True
+        kinds = [
+            row["kind"] for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_archived_task_ids_on_other_boards(kanban_home):
+    """Archived tasks on another configured board still resolve as references."""
+    kb.create_board("product-strategic")
+    other_conn = kb.connect(board="product-strategic")
+    try:
+        other = kb.create_task(other_conn, title="other", assignee="x")
+        assert kb.archive_task(other_conn, other) is True
+    finally:
+        other_conn.close()
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        assert kb.complete_task(conn, parent, summary=f"archived dependency {other}") is True
+        kinds = [
+            row["kind"] for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------

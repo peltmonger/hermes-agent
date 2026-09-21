@@ -3513,7 +3513,7 @@ def _scan_prose_for_phantom_ids(
     text: str,
 ) -> list[str]:
     """Regex-scan free-form text for ``t_<hex>`` references; return the
-    ones that don't exist in ``tasks``.
+    ones that don't exist on any configured board.
 
     Used as a non-blocking advisory check on completion summaries. An
     empty return means "no suspicious references found" — either the
@@ -3538,7 +3538,44 @@ def _scan_prose_for_phantom_ids(
         tuple(unique),
     ).fetchall()
     existing = {r["id"] for r in rows}
-    return [m for m in unique if m not in existing]
+    unresolved = [m for m in unique if m not in existing]
+    if not unresolved:
+        return []
+
+    # Workers are pinned to their own board, but a completion summary may
+    # legitimately reference a task on another configured board. Query other
+    # board DBs read-only and directly by path so HERMES_KANBAN_DB cannot make
+    # every lookup resolve back to the worker's pinned database.
+    for metadata in list_boards():
+        slug = metadata["slug"]
+        db_path = (
+            kanban_home() / "kanban.db"
+            if slug == DEFAULT_BOARD
+            else board_dir(slug) / "kanban.db"
+        )
+        if not db_path.is_file():
+            continue
+        try:
+            board_conn = sqlite3.connect(
+                f"{db_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            try:
+                board_rows = board_conn.execute(
+                    f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+                    tuple(unresolved),
+                ).fetchall()
+            finally:
+                board_conn.close()
+        except sqlite3.Error:
+            # This check is advisory. A concurrently removed or unavailable
+            # board must not make an otherwise successful completion fail.
+            continue
+        existing.update(row[0] for row in board_rows)
+        unresolved = [m for m in unresolved if m not in existing]
+        if not unresolved:
+            return []
+    return unresolved
 
 
 class HallucinatedCardsError(ValueError):
