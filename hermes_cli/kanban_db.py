@@ -3561,8 +3561,9 @@ def _scan_prose_for_phantom_ids(
                 uri=True,
             )
             try:
+                board_placeholders = ",".join(["?"] * len(unresolved))
                 board_rows = board_conn.execute(
-                    f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+                    f"SELECT id FROM tasks WHERE id IN ({board_placeholders})",
                     tuple(unresolved),
                 ).fetchall()
             finally:

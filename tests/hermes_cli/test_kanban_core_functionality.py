@@ -4096,6 +4096,41 @@ def test_complete_prose_scan_ignores_archived_task_ids_on_other_boards(kanban_ho
         conn.close()
 
 
+def test_complete_prose_scan_resolves_ids_across_multiple_other_boards(kanban_home):
+    """Only truly missing IDs warn when valid IDs resolve on separate boards."""
+    kb.create_board("chief-of-staff-strategic")
+    chief_conn = kb.connect(board="chief-of-staff-strategic")
+    try:
+        done_elsewhere = kb.create_task(chief_conn, title="done", assignee="x")
+        assert kb.complete_task(chief_conn, done_elsewhere, summary="done") is True
+    finally:
+        chief_conn.close()
+
+    kb.create_board("product-strategic")
+    product_conn = kb.connect(board="product-strategic")
+    try:
+        archived_elsewhere = kb.create_task(product_conn, title="archived", assignee="x")
+        assert kb.archive_task(product_conn, archived_elsewhere) is True
+    finally:
+        product_conn.close()
+
+    missing = "t_deadbeef"
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        summary = f"checked {done_elsewhere}, {archived_elsewhere}, and {missing}"
+        assert kb.complete_task(conn, parent, summary=summary) is True
+        warning = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? "
+            "AND kind='suspected_hallucinated_references'",
+            (parent,),
+        ).fetchone()
+        assert warning is not None
+        assert json.loads(warning["payload"])["phantom_refs"] == [missing]
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Recovery helpers (reclaim + reassign)
 # ---------------------------------------------------------------------------
