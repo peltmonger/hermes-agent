@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -24,12 +25,40 @@ if TYPE_CHECKING:
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+_NOTICE_POLICIES = ("ceo-completion",)
 
 _SCALAR_TYPES = (str, int, float, bool)
 
 # Subscription primary key predicate; every per-row statement below binds
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
+
+
+def classify_ceo_completion_parent(body: Any) -> bool:
+    """Whether the opening label block opts into the narrow CEO terminal route.
+
+    Labels are deliberately syntax, not identity proof. Only the first contiguous
+    body block is considered, and delegation labels in that block fail closed.
+    """
+    if not isinstance(body, str):
+        return False
+    opening = body.replace("\r\n", "\n").replace("\r", "\n").split("\n\n", 1)[0].splitlines()
+    if (len(opening) < 3 or opening[0] != "notification: ceo-completion"
+            or not opening[1].startswith("accountable_lead: ")
+            or opening[2] != "ceo_origin: direct"):
+        return False
+    lead = opening[1].removeprefix("accountable_lead: ").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", lead):
+        return False
+    return not any(line.startswith("ceo_notification: none") or line.startswith("ceo_completion_parent:") for line in opening)
+
+
+def is_ceo_completion_delegated(body: Any) -> bool:
+    """Delegated CEO descendants must never acquire a creator route."""
+    if not isinstance(body, str):
+        return False
+    opening = body.replace("\r\n", "\n").replace("\r", "\n").split("\n\n", 1)[0].splitlines()
+    return any(line.startswith("ceo_notification: none") or line.startswith("ceo_completion_parent:") for line in opening)
 
 
 def _sub_key(task_id: str, platform: str, chat_id: str, thread_id: Optional[str]) -> tuple:
@@ -77,6 +106,7 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    notice_policy: Optional[str] = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -92,6 +122,7 @@ def add_notify_sub(
     ``MAX(task_events.id)``) so the notifier never replays history at boot.
     """
     valid_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else None
+    valid_policy = notice_policy if notice_policy in _NOTICE_POLICIES else None
     # api_server is stateless: the adapter has no send(), the wake self-post IS
     # the delivery. A plain 'notify' default would leave those subs with no
     # delivery mechanism at all. Explicit modes still win.
@@ -111,14 +142,14 @@ def add_notify_sub(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-                 chat_type, notifier_profile, delivery_mode, delivery_metadata,
+                 chat_type, notifier_profile, delivery_mode, notice_policy, delivery_metadata,
                  created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, valid_policy, metadata_json, int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -130,6 +161,7 @@ def add_notify_sub(
             ("user_id_alt", user_id_alt, True),
             ("notifier_profile", notifier_profile, True),
             ("delivery_mode", valid_mode, False),
+            ("notice_policy", valid_policy, False),
             ("delivery_metadata", metadata_json, False),
         ):
             if not value:

@@ -1108,15 +1108,28 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
     True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
     try:
-        if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.kanban_db_notify import (
+            classify_ceo_completion_parent, is_ceo_completion_delegated,
+        )
+        task = _kb.get_task(conn, task_id)
+        body = task.body if task else None
+        if is_ceo_completion_delegated(body):
+            return False
+        ceo_completion = classify_ceo_completion_parent(body)
+        if not ceo_completion and not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
             return False
     except Exception:
-        pass  # unreadable config keeps the user-friendly default (True)
+        ceo_completion = False  # unreadable config keeps the user-friendly default (True)
     target = None
     try:
         target = _resolve_notify_target()
         if target is None:
             return False  # CLI / cron / test — no persistent channel
+        if ceo_completion:
+            if target["platform"] == "tui":
+                return False
+            target.update(delivery_mode="notify", notice_policy="ceo-completion")
         from hermes_cli import kanban_db_notify as _kbn
         # Inheritance and explicit subscriptions already encode the delivery policy.
         # Auto-subscribe must not turn a passive destination into an agent wake.

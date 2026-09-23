@@ -803,6 +803,20 @@ active tenant passed by tools) wins. Boards remain the hard isolation boundary.
 
 **Important boundary:** Manual mode disables only the built-in Triage decomposer. It does not prevent a profile from calling `kanban_create`, and it does not disable creator-session wake-ups. With `kanban.auto_subscribe_on_create: true`, a task's terminal event resumes the originating agent with a synthetic status turn so it can inspect the handoff and decide whether genuinely new follow-up work is needed. Set `auto_subscribe_on_create: false` when task completion should remain passive. For provenance, built-in decomposer children use `created_by=auto-decomposer`; tasks created by a resumed profile carry that profile name instead.
 
+#### CEO completion notice exception
+
+With `kanban.auto_subscribe_on_create: false`, ordinary tasks remain silent. A parent created from a persistent gateway session may opt into one passive terminal notice only when its body begins with this exact opening block (LF and CRLF are accepted):
+
+```text
+notification: ceo-completion
+accountable_lead: <non-empty-lead-slug>
+ceo_origin: direct
+```
+
+Delegated children and descendants must carry `ceo_completion_parent: <root-id>` and `ceo_notification: none` in their opening block. They never inherit or create this route. The qualifying parent retains only its originating gateway destination with passive `notify` delivery. It emits once for `completed`, or for `blocked` only when `kind == needs_input`; it never wakes an agent and it is removed after the first successful delivery. A parent created from CLI, autonomous, test, cron, or another context with no persistent gateway destination remains silent. Create or update it from the CEO gateway session before delegating.
+
+Plain-text labels cannot authenticate CEO identity or prove that a blocker is CEO-owned. Only the accountable lead may apply the parent block after a direct CEO instruction. Only `kanban_block(kind='needs_input')` on that parent is considered the terminal CEO-owned blocker; ordinary, capability, and transient blockers are silent.
+
 Flip between the two modes from the **Orchestration: Auto/Manual** pill at the top of the kanban page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` — that's still available as a single-task spec rewrite when you don't want fan-out.
 
 The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee`, else the root task's assignee (if it names an existing profile), else the active default profile.

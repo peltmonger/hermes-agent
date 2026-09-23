@@ -30,7 +30,7 @@ from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import HISTORY_UNREADABLE, GatewayStatusCommandsMixin
-from hermes_cli.config import atomic_config_write, cfg_get
+from hermes_cli.config import atomic_config_write, cfg_get, load_config
 from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger("gateway.run")
@@ -378,6 +378,19 @@ class GatewaySlashCommandsMixin(
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli.kanban_db_notify import (
+            classify_ceo_completion_parent, is_ceo_completion_delegated,
+        )
+        with _kbc.connect(board=requested_board) as _conn:
+            task = _kb.get_task(_conn, task_id)
+        body = task.body if task else None
+        if is_ceo_completion_delegated(body):
+            return False
+        ceo_completion = classify_ceo_completion_parent(body)
+        if not ceo_completion and not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
+            return False
         source = event.source
 
         def _field(name: str) -> Optional[str]:
@@ -405,8 +418,11 @@ class GatewaySlashCommandsMixin(
                     # the same session key only when the alt id survives the round-trip.
                     user_id_alt=_field("user_id_alt"),
                     notifier_profile=_field("profile") or getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                    # Generic chat subscriptions retain wake semantics. The CEO
+                    # route is intentionally one passive terminal notice.
+                    delivery_mode="notify" if ceo_completion else "notify+wake",
+                    delivery_metadata=delivery_metadata,
+                    notice_policy="ceo-completion" if ceo_completion else None)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

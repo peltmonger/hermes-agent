@@ -751,6 +751,19 @@ class _KanbanNotification:
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
 
+        # CEO completion subscriptions are a narrow, one-shot exception to
+        # generic notification semantics. Claiming remains batch-atomic; only
+        # the first eligible event is delivered, while silent events still
+        # advance the cursor. A failed send rewinds the original claim.
+        if self.sub.get("notice_policy") == "ceo-completion":
+            terminal = next((ev for ev in self.d["events"] if ev.kind == "completed" or (
+                ev.kind == "blocked" and _payload(ev, "kind") == "needs_input"
+            )), None)
+            if terminal is None:
+                await self.advance()
+                return
+            self.d = {**self.d, "events": [terminal]}
+
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
         async with self._owner_scope():
@@ -802,6 +815,9 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
-        if self.task and self.task.status == "archived":
+        # CEO completion routes settle irreversibly after their first successful
+        # terminal send. Generic routes remain reopen-safe until archive.
+        if self.sub.get("notice_policy") == "ceo-completion":
+            await self.unsub()
+        elif self.task and self.task.status == "archived":
             await self.unsub()
