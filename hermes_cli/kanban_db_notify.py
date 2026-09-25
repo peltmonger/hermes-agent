@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
-_NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+_NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake", "wake-terminal-once")
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -77,6 +77,9 @@ def add_notify_sub(
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
     delivery_metadata: Optional[Mapping[str, Any]] = None,
+    source_task_id: Optional[str] = None,
+    source_profile: Optional[str] = None,
+    source_session_id: Optional[str] = None,
 ) -> None:
     """Register a gateway source wanting terminal-state notifications for
     ``task_id``; idempotent on (task, platform, chat, thread).
@@ -112,13 +115,15 @@ def add_notify_sub(
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                  chat_type, notifier_profile, delivery_mode, delivery_metadata,
+                 source_task_id, source_profile, source_session_id,
                  created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, source_task_id, source_profile, source_session_id,
+                int(time.time()), task_id,
             ),
         )
         # chat_type / delivery_mode are last-write-wins; delivery metadata
@@ -131,6 +136,9 @@ def add_notify_sub(
             ("notifier_profile", notifier_profile, True),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
+            ("source_task_id", source_task_id, False),
+            ("source_profile", source_profile, False),
+            ("source_session_id", source_session_id, False),
         ):
             if not value:
                 continue

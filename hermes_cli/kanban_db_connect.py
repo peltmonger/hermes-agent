@@ -849,6 +849,9 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+    ("source_task_id", "source_task_id TEXT"),
+    ("source_profile", "source_profile TEXT"),
+    ("source_session_id", "source_session_id TEXT"),
 )
 
 _TASK_RUN_COLUMNS = (

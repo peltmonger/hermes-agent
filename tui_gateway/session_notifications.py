@@ -342,6 +342,34 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
 
 
+def _is_direct_terminal_wake_event(ev) -> bool:
+    """The explicit direct-delegation route has a deliberately smaller terminal set than generic notifications."""
+    if getattr(ev, "kind", "") == "completed":
+        return True
+    if getattr(ev, "kind", "") != "blocked":
+        return False
+    return (getattr(ev, "payload", None) or {}).get("kind") in {"needs_input", "capability"}
+
+
+def _format_direct_terminal_wake(sub: dict, task, ev, board_slug: str) -> str:
+    """Bounded internal handoff text. It is consumed by the terminal session, never a platform adapter."""
+    payload = getattr(ev, "payload", None) or {}
+    title = str(getattr(task, "title", "") or sub["task_id"])[:120]
+    assignee = str(getattr(task, "assignee", "") or "")[:80]
+    text = (
+        f"[KANBAN DIRECT TERMINAL HANDOFF] board={board_slug} child={sub['task_id']} "
+        f"title={title!r} assignee={assignee!r} parent={sub.get('source_task_id') or ''} "
+        f"event={ev.kind}"
+    )
+    if ev.kind == "completed":
+        text += f" summary={str(payload.get('summary') or payload.get('result') or '')[:1000]!r}"
+        if payload.get("metadata") is not None:
+            text += f" metadata={str(payload['metadata'])[:1000]!r}"
+    else:
+        text += f" kind={str(payload.get('kind') or '')!r} reason={str(payload.get('reason') or '')[:1000]!r}"
+    return text
+
+
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
     """(slug, resolved DB identity) — multiple slugs can point at one DB when HERMES_KANBAN_DB pins it."""
     slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
@@ -376,10 +404,20 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
+            direct_terminal_wake = sub.get("delivery_mode") == "wake-terminal-once"
+            _old, _new, events = _kbn.claim_unseen_events_for_sub(
+                conn, kinds=None if direct_terminal_wake else _KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
+            if direct_terminal_wake:
+                event = next((item for item in events if _is_direct_terminal_wake_event(item)), None)
+                if event is not None:
+                    texts.append(_format_direct_terminal_wake(sub, task, event, slug))
+                    # This mode is one-shot and never reopens/inherits. The atomic cursor claim serializes
+                    # concurrent pollers before removal, so a replay or later terminal event is silent.
+                    _kbn.remove_notify_sub(conn, **sub_ident)
+                continue
             from gateway.kanban_watchers_notifier import diagnostic_event
             from gateway.warning_notifications import DiagnosticText
             for ev in events:

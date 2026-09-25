@@ -1063,6 +1063,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notifier_profile TEXT,
     delivery_mode TEXT NOT NULL DEFAULT 'notify',
     delivery_metadata TEXT,
+    source_task_id TEXT,
+    source_profile TEXT,
+    source_session_id TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
@@ -1492,6 +1495,7 @@ def _inherit_notify_subs(
                COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
           FROM kanban_notify_subs
          WHERE task_id IN ({placeholders})
+           AND COALESCE(delivery_mode, 'notify') != 'wake-terminal-once'
         """,
         (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
     )

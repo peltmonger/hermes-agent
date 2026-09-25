@@ -401,6 +401,15 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "synthesizer task."
             ),
         },
+        "delivery_mode": {
+            "type": "string",
+            "enum": ["wake-terminal-once"],
+            "description": (
+                "Opt in to one internal terminal wake when this direct child first completes or blocks "
+                "for needs_input/capability. Available only to a dispatcher-spawned worker creating a child "
+                "for a different configured profile; otherwise creation succeeds without a wake subscription."
+            ),
+        },
         "tenant": _prop("string", (
                 "Optional namespace for multi-project isolation. "
                 "Defaults to HERMES_TENANT env if set."

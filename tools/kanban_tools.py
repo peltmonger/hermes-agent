@@ -1067,11 +1067,45 @@ def _handle_create(args: dict, **kw) -> str:
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
+        terminal_wake_subscribed = _maybe_subscribe_direct_terminal_wake(
+            conn, task_id=new_tid, assignee=str(assignee), delivery_mode=args.get("delivery_mode"),
+            source_task_id=self_tid,
+        )
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+        subscribed = terminal_wake_subscribed if args.get("delivery_mode") else _maybe_auto_subscribe(conn, new_tid)
+        return _ok(task_id=new_tid, **landed, **gate, subscribed=subscribed,
+                   terminal_wake_subscribed=terminal_wake_subscribed)
+
+
+def _maybe_subscribe_direct_terminal_wake(
+    conn: Any, *, task_id: str, assignee: str, delivery_mode: Any, source_task_id: Optional[str],
+) -> bool:
+    """Persist the one permitted internal wake route, otherwise fail closed without changing creation."""
+    if delivery_mode != "wake-terminal-once" or not source_task_id or not _is_dispatcher_owned_worker():
+        return False
+    source_session_id = _persisted_session_id(os.environ.get("HERMES_SESSION_ID", ""))
+    source_profile = _persisted_identity()
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        target_profile = normalize_profile_name(assignee)
+    except Exception:
+        return False
+    if not source_session_id or not source_profile or target_profile == source_profile or not profile_exists(target_profile):
+        return False
+    try:
+        from hermes_cli import kanban_db_notify as _kbn
+        _kbn.add_notify_sub(
+            conn, task_id=task_id, platform="tui", chat_id=source_session_id,
+            notifier_profile=source_profile, delivery_mode="wake-terminal-once",
+            source_task_id=source_task_id, source_profile=source_profile,
+            source_session_id=source_session_id,
+        )
+        return True
+    except Exception:
+        logger.warning("direct terminal wake subscription failed for %s", task_id, exc_info=True)
+        return False
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
