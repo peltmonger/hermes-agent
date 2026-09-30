@@ -178,6 +178,25 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
 
+def test_children_inherit_existing_delivery_modes_except_parent_only_wake_once(kanban_home):
+    from hermes_cli import kanban_db_notify as kbn
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        for mode in ("notify", "notify+wake", "wake", "wake-terminal-once"):
+            kbn.add_notify_sub(
+                conn, task_id=parent, platform="telegram", chat_id=mode,
+                delivery_mode=mode,
+            )
+        child = kb.create_task(conn, title="child", parents=[parent])
+        inherited = kbn.list_notify_subs(conn, child)
+
+    assert {(sub["chat_id"], sub["delivery_mode"]) for sub in inherited} == {
+        ("notify", "notify"),
+        ("notify+wake", "notify+wake"),
+        ("wake", "wake"),
+    }
+
 
 
 
