@@ -1531,6 +1531,18 @@ def multi_board_env(monkeypatch, tmp_path):
     }
 
 
+@pytest.fixture
+def pinned_multi_board_env(multi_board_env, monkeypatch):
+    """Pin the default board as a dispatched worker would, while the
+    persisted current board remains different from the explicit target.
+    """
+    from hermes_cli import kanban_db as kb
+
+    kb.set_current_board("default")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(multi_board_env["default_db"]))
+    return multi_board_env
+
+
 def test_board_param_routes_create_to_alt_board(multi_board_env):
     """kanban_create with ``board="alt"`` must write into the alt board's DB,
     not the default one."""
@@ -1589,6 +1601,32 @@ def test_board_param_routes_show_to_alt_board(multi_board_env):
     good = json.loads(kt._handle_show({"task_id": alt_seed, "board": "alt"}))
     assert good["task"]["id"] == alt_seed
     assert good["task"]["title"] == "seed-alt"
+
+
+def test_explicit_board_routes_show_and_comment_past_current_board_pin(pinned_multi_board_env):
+    """Explicit tool board scope wins over both the persisted board and DB pin."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    alt_seed = pinned_multi_board_env["alt_seed"]
+
+    shown = json.loads(kt._handle_show({"task_id": alt_seed, "board": "alt"}))
+    assert shown["task"]["id"] == alt_seed
+
+    commented = json.loads(kt._handle_comment({
+        "task_id": alt_seed,
+        "body": "explicit board comment",
+        "board": "alt",
+    }))
+    assert commented["ok"] is True
+
+    missing = json.loads(kt._handle_show({"task_id": "t_missing", "board": "alt"}))
+    assert "not found" in missing["error"]
+
+    with kb.connect(board="alt") as conn:
+        assert [c.body for c in kb.list_comments(conn, alt_seed)] == ["explicit board comment"]
+    with kb.connect(board="default") as conn:
+        assert kb.get_task(conn, alt_seed) is None
 
 
 def test_board_param_routes_assign_via_create_to_alt(multi_board_env):

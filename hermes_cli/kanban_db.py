@@ -411,20 +411,23 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
 
     Resolution (highest precedence first):
 
-    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
-       back-compat and for the dispatcher→worker handoff (defense in
-       depth: dispatcher injects this into worker env so workers are
+    1. An explicit ``board`` argument selects that board's DB. It must
+       override ``HERMES_KANBAN_DB`` so cross-board tool calls made by a
+       dispatcher-spawned worker do not read or write its pinned home board.
+    2. ``HERMES_KANBAN_DB`` env var pins the implicit active-board path for
+       back-compat and for the dispatcher→worker handoff (defense in depth:
+       dispatcher injects this into worker env so ordinary worker calls are
        immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
+    3. When ``board`` arg is None, the active board from
        :func:`get_current_board` is used.
-    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+    4. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
-    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban.db"
