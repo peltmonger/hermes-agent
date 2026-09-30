@@ -37,6 +37,7 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
+_WAKE_TERMINAL_ONCE_KINDS = ("completed", "blocked")
 
 
 def diagnostic_event(ev) -> bool:
@@ -297,9 +298,14 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
+        event_kinds = (
+            _WAKE_TERMINAL_ONCE_KINDS
+            if sub.get("delivery_mode") == "wake-terminal-once"
+            else TERMINAL_KINDS
+        )
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-            thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            thread_id=sub.get("thread_id") or "", kinds=event_kinds,
         )
         if not events:
             return None
@@ -502,8 +508,9 @@ class _KanbanNotification:
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")
         mode = sub.get("delivery_mode") or "notify"
-        self.wake_agent = mode in ("notify+wake", "wake")
-        self.send_passive = mode != "wake"
+        self.wake_terminal_once = mode == "wake-terminal-once"
+        self.wake_agent = mode in ("notify+wake", "wake", "wake-terminal-once")
+        self.send_passive = mode not in ("wake", "wake-terminal-once")
         # Worker handoff carried into the synthetic wake turn so the woken
         # creator doesn't re-decompose work already on the board.
         self.wake_handoff = self.wake_review_detail = self.session_key = self.synth = ""
@@ -541,6 +548,10 @@ class _KanbanNotification:
             await self.rewind()
 
     async def _wake_failed(self, fmt: str, exc: Exception) -> None:
+        if self.wake_terminal_once:
+            logger.warning(fmt, self.task_id, 1, 1, exc, exc_info=True)
+            await self.rewind()
+            return
         drop_fmt = "kanban notifier: dropping subscription %s on %s after %d consecutive wake failures"
         await self.delivery_failed(fmt, (self.task_id,), drop_fmt, exc, True)
 
@@ -564,6 +575,21 @@ class _KanbanNotification:
         self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
+            return
+        if self.wake_terminal_once:
+            terminal = self.d["events"][0]
+            if terminal.kind == "completed":
+                handoff = _payload(terminal, "summary") or (task.result if task else None) or "completed without a handoff"
+            else:
+                handoff = _payload(terminal, "reason") or "blocked without a handoff"
+            self.synth = (
+                "[Kanban terminal wake - CEO-owned decision context]\n"
+                f"Task title: {self.title}\n"
+                f"Assignee: {task.assignee if task and task.assignee else 'unassigned'}\n"
+                f"Board: {self.board_slug or 'default'}\n"
+                f"Terminal handoff: {handoff}\n\n"
+                "Output only the finished outcome plus artifact, the exact CEO-owned unblock, or [SILENT]."
+            )
             return
         if self.is_push_adapter:
             self.session_key = getattr(task, "session_id", None) or ""
@@ -752,6 +778,8 @@ class _KanbanNotification:
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
 
+        if self.wake_terminal_once:
+            self.d = {**self.d, "events": self.d["events"][:1]}
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
         async with self._owner_scope():
@@ -803,6 +831,9 @@ class _KanbanNotification:
         await self.advance()
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
-        if self.task and self.task.status == "archived":
+        # This parent-only wake is a one-shot handoff. Generic routes remain
+        # reopen-safe until archival.
+        if self.wake_terminal_once:
+            await self.unsub()
+        elif self.task and self.task.status == "archived":
             await self.unsub()

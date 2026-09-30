@@ -74,6 +74,22 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     finally:
         conn.close()
 
+
+def test_notify_subscribe_persists_wake_terminal_once(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="one-shot wake", assignee="worker")
+        kbn.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat1",
+            delivery_mode="wake-terminal-once",
+        )
+        [subscription] = kbn.list_notify_subs(conn, task_id)
+
+    assert subscription["delivery_mode"] == "wake-terminal-once"
+
+
 def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     """The CLI must persist thread route anchors without dropping existing metadata."""
     import argparse

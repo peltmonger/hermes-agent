@@ -22,8 +22,9 @@ if TYPE_CHECKING:
 
 
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
-# (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
-_NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+# (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only;
+# "wake-terminal-once" = one parent-only terminal wake with no passive message.
+_NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake", "wake-terminal-once")
 
 _SCALAR_TYPES = (str, int, float, bool)
 

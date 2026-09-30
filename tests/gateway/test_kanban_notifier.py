@@ -82,6 +82,65 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_wake_terminal_once_wakes_only_first_completed_or_blocked_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-once.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="CEO parent", assignee="engineering-lead")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="ceo-chat",
+            user_id="ceo-user", chat_type="dm", delivery_mode="wake-terminal-once",
+        )
+        kb.complete_task(conn, tid, summary="artifact: /tmp/result.txt")
+        for kind in ("crashed", "timed_out", "gave_up", "comment"):
+            kb._append_event(conn, tid, kind)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert len(adapter.handled) == 1
+    text = adapter.handled[0].text
+    assert "CEO parent" in text
+    assert "engineering-lead" in text
+    assert "default" in text
+    assert "artifact: /tmp/result.txt" in text
+    assert "exact CEO-owned unblock" in text
+    assert "[SILENT]" in text
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid) == []
+
+
+def test_wake_terminal_once_retains_subscription_after_wake_failure(tmp_path, monkeypatch):
+    class FailingWakeAdapter(RecordingAdapter):
+        async def handle_message(self, event):
+            self.handled.append(event)
+            raise RuntimeError("wake failed")
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-retry.db"))
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="CEO parent", assignee="engineering-lead")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="ceo-chat",
+            delivery_mode="wake-terminal-once",
+        )
+        kb.block_task(conn, tid, reason="CEO decision required", kind="needs_input")
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(FailingWakeAdapter())))
+
+    with kbc.connect() as conn:
+        assert len(kbn.list_notify_subs(conn, tid)) == 1
+        _, events = kbn.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="ceo-chat",
+            kinds=("completed", "blocked"),
+        )
+    assert [event.kind for event in events] == ["blocked"]
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
