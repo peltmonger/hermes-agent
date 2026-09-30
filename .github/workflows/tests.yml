@@ -107,6 +107,41 @@ jobs:
           path: test_durations.json
           key: test-durations-${{ github.run_id }}
 
+  notifier-regression:
+    name: Run Kanban notifier regression
+    # The fork has no 32-core runner capacity. Its full suite keeps the upstream
+    # runner contract; this focused, PR-relevant slice supplies executable evidence.
+    if: github.repository == 'peltmonger/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Check SQLite runs WAL
+        run: |
+          "$HERMES_PYTHON" -c "import sqlite3, sys, hermes_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
+
+      - name: Run focused notifier and DB regressions
+        run: |
+          "$HERMES_PYTHON" -m pytest -q \
+            tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_wakes_only_first_completed_or_blocked_event \
+            tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_retains_subscription_after_wake_failure \
+            tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_api_server_uses_subscription_raw_session_id_and_unsubs \
+            tests/hermes_cli/test_kanban_db.py::test_children_inherit_existing_delivery_modes_except_parent_only_wake_once \
+            tests/hermes_cli/test_kanban_notify.py::test_notify_subscribe_persists_wake_terminal_once
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
