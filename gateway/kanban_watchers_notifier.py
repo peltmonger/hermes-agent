@@ -576,6 +576,13 @@ class _KanbanNotification:
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return
+        if self.is_push_adapter:
+            self.session_key = getattr(task, "session_id", None) or ""
+        else:
+            # Non-push wakes target sub["chat_id"] (the raw session id the
+            # subscriber registered). task.session_id may be a WORKER session
+            # for child tasks; use it only for legacy rows.
+            self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
         if self.wake_terminal_once:
             terminal = self.d["events"][0]
             if terminal.kind == "completed":
@@ -591,13 +598,6 @@ class _KanbanNotification:
                 "Output only the finished outcome plus artifact, the exact CEO-owned unblock, or [SILENT]."
             )
             return
-        if self.is_push_adapter:
-            self.session_key = getattr(task, "session_id", None) or ""
-        else:
-            # Non-push wakes target sub["chat_id"] (the raw session id the
-            # subscriber registered). task.session_id may be a WORKER session
-            # for child tasks; use it only for legacy rows.
-            self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
         _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")

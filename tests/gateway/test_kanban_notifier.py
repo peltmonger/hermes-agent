@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 
 from gateway.config import Platform
@@ -139,6 +140,42 @@ def test_wake_terminal_once_retains_subscription_after_wake_failure(tmp_path, mo
             kinds=("completed", "blocked"),
         )
     assert [event.kind for event in events] == ["blocked"]
+
+
+def test_wake_terminal_once_api_server_uses_subscription_raw_session_id_and_unsubs(tmp_path, monkeypatch):
+    class ApiServerAdapter(RecordingAdapter):
+        supports_async_delivery = False
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-once-api-server.db"))
+    kb.init_db()
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="CEO parent",
+            assignee="engineering-lead",
+            session_id="worker-session-that-must-not-be-used",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="api_server",
+            chat_id="raw-destination-session-id",
+            delivery_mode="wake-terminal-once",
+        )
+        kb.complete_task(conn, tid, summary="ready")
+
+    adapter = ApiServerAdapter()
+    runner = _make_runner(adapter)
+    runner.adapters = {Platform.API_SERVER: adapter}
+    wake_mock = AsyncMock()
+    with patch("gateway.wake.deliver_wake", new=wake_mock):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    wake_mock.assert_awaited_once()
+    assert wake_mock.await_args.kwargs["session_id"] == "raw-destination-session-id"
+    assert adapter.sent == []
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid) == []
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
