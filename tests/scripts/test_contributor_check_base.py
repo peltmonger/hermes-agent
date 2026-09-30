@@ -24,7 +24,7 @@ def _commit(repo: Path, message: str, email: str) -> str:
     marker.write_text(f"{message}\n", encoding="utf-8")
     _git(repo, "add", "history.txt")
     subprocess.run(
-        ["git", "commit", "-m", message],
+        ["git", "-c", "core.hooksPath=", "commit", "-m", message],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -38,6 +38,21 @@ def _commit(repo: Path, message: str, email: str) -> str:
         },
     )
     return _git(repo, "rev-parse", "HEAD")
+
+
+def test_fixture_ignores_host_global_hook_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = tmp_path / "host-hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+    _git(tmp_path, "init", "-q")
+    _commit(tmp_path, "synthetic commit", "test@example.com")
 
 
 def test_stacked_pr_base_excludes_commits_already_on_non_main_base(tmp_path: Path) -> None:
