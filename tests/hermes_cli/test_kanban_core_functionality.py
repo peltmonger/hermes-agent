@@ -1227,8 +1227,8 @@ def test_complete_prose_scan_flags_nonexistent_ids(kanban_home):
 def test_complete_prose_scan_ignores_cross_board_ids(kanban_home):
     """Summaries may link valid handoffs stored on another active board."""
     kb.create_board("other-board")
-    other_conn = kb.connect(board="other-board")
-    conn = kb.connect()
+    other_conn = kbc.connect(board="other-board")
+    conn = kbc.connect()
     try:
         other = kb.create_task(other_conn, title="other", assignee="x")
         parent = kb.create_task(conn, title="parent", assignee="x")
@@ -1250,14 +1250,14 @@ def test_complete_prose_scan_ignores_cross_board_ids(kanban_home):
 def test_complete_prose_scan_ignores_archived_cross_board_ids(kanban_home):
     """Archived boards remain valid sources for historical handoff ids."""
     kb.create_board("historic-board")
-    historic_conn = kb.connect(board="historic-board")
+    historic_conn = kbc.connect(board="historic-board")
     try:
         historic = kb.create_task(historic_conn, title="historic", assignee="x")
     finally:
         historic_conn.close()
     kb.remove_board("historic-board")
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="x")
 
