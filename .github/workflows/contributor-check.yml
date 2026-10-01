@@ -2,6 +2,11 @@ name: Contributor Attribution Check
 
 on:
   workflow_call:
+    inputs:
+      pr_base_sha:
+        description: "Configured pull request base SHA; empty for non-PR runs"
+        required: false
+        type: string
     outputs:
       review_status:
         description: "JSON array of review status objects"
@@ -24,8 +29,9 @@ jobs:
       - name: Check for unmapped contributor emails
         id: check-emails
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          # Use the configured PR base for stacked PRs. Pushes have no PR base,
+          # so the helper preserves the existing origin/main merge-base fallback.
+          MERGE_BASE=$(python3 scripts/ci/contributor_check_base.py "${{ inputs.pr_base_sha }}")
 
           # Find any new author emails in this PR's commits
           NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
