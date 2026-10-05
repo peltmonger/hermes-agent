@@ -17,6 +17,7 @@ CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
 
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -106,3 +107,74 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
                 assert "HERMES_SESSION_ID" not in f.read()
     finally:
         env.cleanup()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_scope_markers_never_persist_or_override_a_legacy_snapshot(tmp_path):
+    """A stale snapshot cannot turn parent commands into children or replay approval.
+
+    The current command environment is authoritative even when a snapshot
+    written before this repair contains the delegated-child, cron, and
+    one-command approval markers. Harmless user exports remain available.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tools.environments.base import BaseEnvironment
+
+    class ScriptEnv(BaseEnvironment):
+        def _run_bash(self, *args, **kwargs):
+            raise AssertionError("test executes the generated wrapper directly")
+
+        def cleanup(self):
+            pass
+
+    env = ScriptEnv(cwd=str(tmp_path), timeout=30)
+    env._snapshot_ready = True
+    snapshot = tmp_path / "legacy-snapshot.sh"
+    env._snapshot_path = str(snapshot)
+    snapshot.write_text(
+        "export HERMES_DELEGATED_CHILD_CONTEXT=stale-child\n"
+        "export HERMES_CRON_SESSION=stale-cron\n"
+        "export HERMES_EXPLICIT_USER_APPROVAL=stale-approval\n"
+        "export HARMLESS_USER_EXPORT=keep\n",
+        encoding="utf-8",
+    )
+    probe = (
+        'printf "[%s|%s|%s|%s]" '
+        '"${HERMES_DELEGATED_CHILD_CONTEXT-}" '
+        '"${HERMES_CRON_SESSION-}" '
+        '"${HERMES_EXPLICIT_USER_APPROVAL-}" '
+        '"${HARMLESS_USER_EXPORT-}"'
+    )
+
+    def run(live_env):
+        result = subprocess.run(
+            ["bash", "-c", env._wrap_command(probe, str(tmp_path))],
+            env={"PATH": os.environ["PATH"], **live_env},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.split("__HERMES_CWD_")[0].strip()
+
+    parent = {"HERMES_CRON_SESSION": "", "HERMES_EXPLICIT_USER_APPROVAL": "approved"}
+    child = {
+        "HERMES_DELEGATED_CHILD_CONTEXT": "live-child",
+        "HERMES_CRON_SESSION": "",
+        "HERMES_EXPLICIT_USER_APPROVAL": "approved",
+    }
+
+    assert run(parent) == "[||approved|keep]"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        child_outputs = list(pool.map(run, [child, child]))
+    assert child_outputs == ["[live-child||approved|keep]"] * 2
+    assert run({"HERMES_CRON_SESSION": ""}) == "[|||keep]"
+
+    persisted = snapshot.read_text(encoding="utf-8")
+    for name in (
+        "HERMES_DELEGATED_CHILD_CONTEXT",
+        "HERMES_CRON_SESSION",
+        "HERMES_EXPLICIT_USER_APPROVAL",
+    ):
+        assert name not in persisted
+    assert "HARMLESS_USER_EXPORT" in persisted

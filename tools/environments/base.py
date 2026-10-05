@@ -529,7 +529,15 @@ def _cwd_marker(session_id: str) -> str:
 # as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION|HERMES_DELEGATED_CHILD_CONTEXT|HERMES_EXPLICIT_USER_APPROVAL)"
+)
+# Scope markers are valid only for the current command. Save and restore their
+# live values around snapshot replay so a snapshot written before this exclusion
+# existed cannot turn a parent into a delegated child or replay an approval.
+_SNAPSHOT_RUNTIME_SCOPE_NAMES = (
+    "HERMES_DELEGATED_CHILD_CONTEXT",
+    "HERMES_CRON_SESSION",
+    "HERMES_EXPLICIT_USER_APPROVAL",
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -580,6 +588,7 @@ def _export_dump_excluding_session_vars(
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
+        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION HERMES_EXPLICIT_USER_APPROVAL "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "
@@ -866,7 +875,10 @@ class BaseEnvironment(ABC):
         _snap_tmp = '"$__hermes_snap_tmp"'
 
         parts = []
-        passthrough_names = self._snapshot_excluded_passthrough_names()
+        passthrough_names = (
+            *self._snapshot_excluded_passthrough_names(),
+            *_SNAPSHOT_RUNTIME_SCOPE_NAMES,
+        )
 
         # A shared snapshot may contain the previous profile's value. Save
         # the current process environment before sourcing it, then restore the
