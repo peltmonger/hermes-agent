@@ -135,6 +135,7 @@ jobs:
             tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_wakes_only_first_completed_or_blocked_event \
             tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_retains_subscription_after_wake_failure \
             tests/gateway/test_kanban_notifier.py::test_wake_terminal_once_api_server_uses_subscription_raw_session_id_and_unsubs \
+            tests/gateway/test_kanban_terminal_subscription.py \
             tests/hermes_cli/test_kanban_db.py::test_children_inherit_existing_delivery_modes_except_parent_only_wake_once \
             tests/hermes_cli/test_kanban_notify.py::test_notify_subscribe_persists_wake_terminal_once
         env:
