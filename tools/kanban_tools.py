@@ -1089,7 +1089,7 @@ def _handle_create(args: dict, **kw) -> str:
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+                   subscribed=_maybe_auto_subscribe(conn, new_tid, subscribe_terminal=_parse_bool_arg(args, "subscribe_terminal")))
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
@@ -1134,11 +1134,76 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         delivery_metadata=delivery_metadata or None)
 
 
-def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
+def _resolve_terminal_subscription_target() -> Optional[dict[str, Any]]:
+    """Resolve a ``wake-terminal-once`` subscription target for worker and cron contexts.
+
+    Worker context: ``HERMES_KANBAN_TASK`` is set and the owning task carries a
+    ``session_id`` from the originating gateway conversation. We stamp the
+    subscription with the tasking profile (``HERMES_PROFILE``) and that session
+    id so the one-shot wake lands in the originating conversation.
+
+    Cron context: ``HERMES_CRON_AUTO_DELIVER_PLATFORM``/``CHAT_ID`` are set by
+    ``_reload_dotenv_and_publish_delivery_target``. We use those for the
+    subscription target.
+
+    Returns None when neither context resolves a persistent channel (CLI,
+    tests, or a worker with no session_id on its owning task).
+    """
+    from gateway.session_context import get_session_env as env
+    # Cron auto-deliver target takes priority: a cron job that creates a child
+    # task should wake the cron's delivery destination, not the cron's empty
+    # session ContextVars.
+    cron_platform = env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "")
+    cron_chat_id = env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "")
+    if cron_platform and cron_chat_id:
+        return dict(
+            platform=cron_platform,
+            chat_id=cron_chat_id,
+            thread_id=env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "") or None,
+            notifier_profile=env("HERMES_SESSION_PROFILE", "")
+            or os.environ.get("HERMES_PROFILE", ""),
+            delivery_mode="wake-terminal-once",
+        )
+    # Worker context: the owning task's session_id is the durable anchor.
+    kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not kanban_task:
+        return None
+    try:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+        with _kbc.connect_closing() as _conn:
+            _task = _kb.get_task(_conn, kanban_task)
+    except Exception:
+        return None
+    if not _task or not getattr(_task, "session_id", None):
+        return None
+    session_id = _task.session_id
+    # The platform for a worker-origin session is the originating gateway's
+    # platform. We don't have it directly, but the session_id encodes it for
+    # api_server sessions. For gateway-pushed platforms (Telegram, Discord,
+    # etc.) the wake path resolves the session via the notifier's adapter. Use
+    # "api_server" as the platform: the wake self-post is the delivery, and the
+    # notifier's _owner_scope resolves the served profile's session store.
+    notifier_profile = os.environ.get("HERMES_PROFILE", "") or env("HERMES_SESSION_PROFILE", "")
+    return dict(
+        platform="api_server",
+        chat_id=session_id,
+        notifier_profile=notifier_profile,
+        delivery_mode="wake-terminal-once",
+    )
+
+
+def _maybe_auto_subscribe(conn: Any, task_id: str, *, subscribe_terminal: bool = False) -> bool:
     """Subscribe the calling session to completion/block events; True iff a row was
     written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
     ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
-    True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
+    True). Failures are logged and swallowed: bookkeeping must never fail kanban_create.
+
+    When ``subscribe_terminal`` is True, the subscription uses
+    ``wake-terminal-once`` delivery mode (one-shot, no passive message, no
+    descendant inheritance) and resolves the target from worker or cron context
+    via ``_resolve_terminal_subscription_target`` instead of the passive
+    session ContextVars."""
     try:
         if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
             return False
@@ -1146,14 +1211,17 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         pass  # unreadable config keeps the user-friendly default (True)
     target = None
     try:
-        target = _resolve_notify_target()
+        if subscribe_terminal:
+            target = _resolve_terminal_subscription_target()
+        else:
+            target = _resolve_notify_target()
         if target is None:
             return False  # CLI / cron / test — no persistent channel
         from hermes_cli import kanban_db_notify as _kbn
         # Inheritance and explicit subscriptions already encode the delivery policy.
         # Auto-subscribe must not turn a passive destination into an agent wake.
         if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
-               and (sub["thread_id"] or "") == (target["thread_id"] or "")
+               and (sub["thread_id"] or "") == (target.get("thread_id") or "")
                for sub in _kbn.list_notify_subs(conn, task_id)):
             return True
         _kbn.add_notify_sub(conn, task_id=task_id, **target)
@@ -1161,7 +1229,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     except Exception as _exc:
         logger.warning(
             "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
-            _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
+            _exc, target["platform"] if target else "", bool(target and target.get("chat_id")))
         return False
 
 

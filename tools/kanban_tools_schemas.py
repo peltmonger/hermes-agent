@@ -501,6 +501,19 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
+        "subscribe_terminal": _prop("boolean", (
+                "Subscribe this session to the child task's terminal "
+                "completion or blockage with a one-shot terminal-only "
+                "wake (no passive Slack message, no descendant "
+                "inheritance). Wakes only on accepted child "
+                "completion or explicit human/capability blockage; "
+                "silent for dependency, retry, crash, timeout, "
+                "review, and intermediate states. Failed delivery is "
+                "retried; no replay after tick or reopen. Use for "
+                "explicit terminal-only task-handoff subscriptions "
+                "from worker or cron contexts that have no passive "
+                "messaging channel."
+        )),
     },
     ["title", "assignee"],
 )
